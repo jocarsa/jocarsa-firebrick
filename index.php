@@ -162,6 +162,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
     }
+    // ---- DELETE FOLDER (ADMIN) ----
+    elseif (isset($_POST['delete_folder']) && isAdmin()) {
+        $folderId = (int)($_POST['folder_id'] ?? 0);
+
+        // (Optional) If you'd like to also delete subfolders/projects/iterations, 
+        // you'll need a recursive approach. For simplicity, we do a direct delete:
+        $stmt = $db->prepare("DELETE FROM folders WHERE id = :id");
+        $stmt->bindValue(':id', $folderId, SQLITE3_INTEGER);
+        if (!$stmt->execute()) {
+            $error = "Error deleting folder. Make sure it's empty or handle cascade manually.";
+        } else {
+            header('Location: ' . $_SERVER['PHP_SELF']);
+            exit;
+        }
+    }
     // ---- CREATE PROJECT (ADMIN) ----
     elseif (isset($_POST['create_project']) && isAdmin()) {
         $folder_id = (int)($_POST['folder_id'] ?? 0);
@@ -174,6 +189,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->bindValue(':d', $description, SQLITE3_TEXT);
         if (!$stmt->execute()) {
             $error = "Error creating project.";
+        } else {
+            header('Location: ' . $_SERVER['PHP_SELF']);
+            exit;
+        }
+    }
+    // ---- DELETE PROJECT (ADMIN) ----
+    elseif (isset($_POST['delete_project']) && isAdmin()) {
+        $projectId = (int)($_POST['project_id'] ?? 0);
+
+        // Before deleting the project, optionally remove all iterations for that project:
+        $db->exec("DELETE FROM iterations WHERE project_id = $projectId");
+
+        // Now delete project
+        $stmt = $db->prepare("DELETE FROM projects WHERE id = :id");
+        $stmt->bindValue(':id', $projectId, SQLITE3_INTEGER);
+        if (!$stmt->execute()) {
+            $error = "Error deleting project.";
         } else {
             header('Location: ' . $_SERVER['PHP_SELF']);
             exit;
@@ -213,6 +245,73 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         } else {
             $error = "No file uploaded.";
+        }
+    }
+    // ---- DELETE ITERATION (ADMIN) ----
+    elseif (isset($_POST['delete_iteration']) && isAdmin()) {
+        $iterationId = (int)($_POST['iteration_id'] ?? 0);
+        // Optionally delete comments for this iteration:
+        $db->exec("DELETE FROM comments WHERE iteration_id = $iterationId");
+        
+        // Now delete iteration
+        $stmt = $db->prepare("DELETE FROM iterations WHERE id = :id");
+        $stmt->bindValue(':id', $iterationId, SQLITE3_INTEGER);
+        if (!$stmt->execute()) {
+            $error = "Error deleting iteration.";
+        } else {
+            // Redirect back to the same project page
+            $project_id = (int)$_POST['parent_project_id'];
+            header('Location: ' . $_SERVER['PHP_SELF'] . '?project_id=' . $project_id);
+            exit;
+        }
+    }
+    // ---- UPDATE ITERATION (ADMIN) ----
+    elseif (isset($_POST['update_iteration']) && isAdmin()) {
+        $iterationId = (int)($_POST['iteration_id'] ?? 0);
+        $projectId   = (int)($_POST['parent_project_id'] ?? 0);
+        $title       = $_POST['title'] ?? '';
+        $description = $_POST['description'] ?? '';
+        $file        = $_FILES['file'] ?? null;
+
+        // Get old file_url if needed
+        $oldFileStmt = $db->prepare("SELECT file_url FROM iterations WHERE id = :iid");
+        $oldFileStmt->bindValue(':iid', $iterationId, SQLITE3_INTEGER);
+        $oldFileRes = $oldFileStmt->execute();
+        $oldFile    = $oldFileRes->fetchArray(SQLITE3_ASSOC);
+        $oldFileUrl = $oldFile['file_url'] ?? '';
+
+        $file_url = $oldFileUrl; // Default is the old file
+        $upload_dir = 'uploads/';
+
+        // If user uploaded a new file
+        if ($file && $file['tmp_name']) {
+            if (!is_dir($upload_dir)) {
+                mkdir($upload_dir, 0777, true);
+            }
+            $newFileUrl = $upload_dir . basename($file['name']);
+            if (move_uploaded_file($file['tmp_name'], $newFileUrl)) {
+                $file_url = $newFileUrl;
+            } else {
+                $error = "Error uploading new file.";
+            }
+        }
+
+        // Update iteration
+        $stmt = $db->prepare("
+            UPDATE iterations
+            SET title = :t, description = :d, file_url = :f
+            WHERE id = :id
+        ");
+        $stmt->bindValue(':t', $title, SQLITE3_TEXT);
+        $stmt->bindValue(':d', $description, SQLITE3_TEXT);
+        $stmt->bindValue(':f', $file_url, SQLITE3_TEXT);
+        $stmt->bindValue(':id', $iterationId, SQLITE3_INTEGER);
+
+        if (!$stmt->execute()) {
+            $error = "Error updating iteration.";
+        } else {
+            header('Location: ' . $_SERVER['PHP_SELF'] . '?project_id=' . $projectId);
+            exit;
         }
     }
     // ---- CREATE / UPDATE / DELETE CUSTOMER (ADMIN) ----
@@ -321,17 +420,25 @@ function renderFolderTree($parent_id = null) {
     while ($folder = $folderQ->fetchArray(SQLITE3_ASSOC)) {
         echo "<li><span style='font-weight:bold;'>📁 " . htmlspecialchars($folder['name']) . "</span>";
 
+        // Only admins see delete button for folder:
+        if (isAdmin()) {
+            echo "<form method='post' style='display:inline;' onsubmit='return confirm(\"Delete this folder?\");'>
+                    <input type='hidden' name='delete_folder' value='1'>
+                    <input type='hidden' name='folder_id' value='{$folder['id']}'>
+                    <button type='submit' style='margin-left:10px;background:red;'>X</button>
+                  </form>";
+        }
+
         // Get subfolders & projects
-        // We'll just quickly gather them, then do recursion
         $projQ = $db->query("SELECT * FROM projects WHERE folder_id=".$folder['id']." ORDER BY title ASC");
-        $hasChildren = false;
-        // Let's gather projects in array
+
+        // Gather projects in array
         $projectsArr = [];
         while ($p = $projQ->fetchArray(SQLITE3_ASSOC)) {
             $projectsArr[] = $p;
         }
 
-        // Check if we have subfolders
+        // Check subfolders
         $subFolderQ = $db->query("SELECT id FROM folders WHERE parent_id=" . (int)$folder['id']);
         $subfoldersArr = [];
         while ($sf = $subFolderQ->fetchArray(SQLITE3_ASSOC)) {
@@ -342,7 +449,17 @@ function renderFolderTree($parent_id = null) {
             echo "<ul>";
             // Show projects
             foreach ($projectsArr as $proj) {
-                echo "<li><a href='?project_id=" . $proj['id'] . "'>🗎 " . htmlspecialchars($proj['title']) . "</a></li>";
+                echo "<li>";
+                echo "<a href='?project_id=" . $proj['id'] . "'>🗎 " . htmlspecialchars($proj['title']) . "</a>";
+                // Only admins see delete button for project:
+                if (isAdmin()) {
+                    echo "<form method='post' style='display:inline;' onsubmit='return confirm(\"Delete this project?\");'>
+                            <input type='hidden' name='delete_project' value='1'>
+                            <input type='hidden' name='project_id' value='{$proj['id']}'>
+                            <button type='submit' style='margin-left:10px;background:red;'>X</button>
+                          </form>";
+                }
+                echo "</li>";
             }
             // Recurse subfolders
             renderFolderTree($folder['id']);
@@ -375,15 +492,15 @@ function renderFolderTree($parent_id = null) {
         header h1 {
             margin: 0;
             display: flex;
-	flex-direction: row;
-	flex-wrap: nowrap;
-	justify-content: center;
-	align-items: center;
-	align-content: stretch;
+            flex-direction: row;
+            flex-wrap: nowrap;
+            justify-content: center;
+            align-items: center;
+            align-content: stretch;
         }
         header h1 img{
-        	width:50px;
-        	margin-right:20px;
+            width:50px;
+            margin-right:20px;
         }
         nav a {
             color: white; text-decoration: none; margin-left: 20px;
@@ -478,6 +595,7 @@ function renderFolderTree($parent_id = null) {
         }
         video {
             display: block; margin: 10px 0;
+            max-width: 100%;
         }
 
         /* Modals */
@@ -504,10 +622,7 @@ function renderFolderTree($parent_id = null) {
             background: #888;
         }
         .footer p{
-        	margin:0px;
-        }
-        video{
-        	width:100%;
+            margin:0px;
         }
     </style>
     <script>
@@ -617,8 +732,8 @@ function renderFolderTree($parent_id = null) {
                             <td><?php echo htmlspecialchars($cust['name']); ?></td>
                             <td><?php echo htmlspecialchars($cust['email']); ?></td>
                             <td>
-                                <button onclick="openModal('edit-customer-<?php echo $cust['id']; ?>')">Edtar</button>
-                                <form method="post" style="display:inline-block">
+                                <button onclick="openModal('edit-customer-<?php echo $cust['id']; ?>')">Editar</button>
+                                <form method="post" style="display:inline-block" onsubmit="return confirm('Delete this customer?');">
                                     <input type="hidden" name="delete_customer" value="1">
                                     <input type="hidden" name="id" value="<?php echo $cust['id']; ?>">
                                     <button type="submit">Borrar</button>
@@ -649,7 +764,7 @@ function renderFolderTree($parent_id = null) {
 
                 <!-- CREATE CUSTOMER (ADMIN) -->
                 <div style="margin-top: 30px;">
-                    <h3>Create Nuevo cliente</h3>
+                    <h3>Crear nuevo cliente</h3>
                     <form method="post">
                         <input type="hidden" name="create_customer" value="1">
                         <label>Usuario:</label>
@@ -669,16 +784,24 @@ function renderFolderTree($parent_id = null) {
                 <p><?php echo nl2br(htmlspecialchars($selected_project['description'])); ?></p>
                 <h3>Iterations</h3>
                 <?php if ($iterations): ?>
-                    <ul>
+                    <ul style="list-style:none;padding:0;">
                     <?php while ($iteration = $iterations->fetchArray(SQLITE3_ASSOC)): ?>
-                        <li>
+                        <li style="border:1px solid #ccc; padding:10px; margin-bottom:10px;">
                             <h4><?php echo htmlspecialchars($iteration['title']); ?></h4>
                             <p><?php echo nl2br(htmlspecialchars($iteration['description'])); ?></p>
                             <?php if ($iteration['file_url']): ?>
-                            <video  controls>
+                            <video controls>
                                 <source src="<?php echo htmlspecialchars($iteration['file_url']); ?>" type="video/mp4">
                                 Your browser does not support the video tag.
                             </video>
+                            <!-- Direct Download Link -->
+                            <p>
+                                <a href="<?php echo htmlspecialchars($iteration['file_url']); ?>" 
+                                   download
+                                   style="color:blue;text-decoration:underline;">
+                                   Download Video
+                                </a>
+                            </p>
                             <?php endif; ?>
 
                             <!-- If customer, allow comment -->
@@ -707,6 +830,39 @@ function renderFolderTree($parent_id = null) {
                                 </li>
                             <?php endwhile; ?>
                             </ul>
+
+                            <!-- If Admin, can Edit or Delete iteration -->
+                            <?php if (isAdmin()): ?>
+                                <div style="margin-top:10px;">
+                                    <button onclick="openModal('edit-iteration-<?php echo $iteration['id']; ?>')">Edit</button>
+                                    <form method="post" style="display:inline-block" onsubmit="return confirm('Delete this iteration?');">
+                                        <input type="hidden" name="delete_iteration" value="1">
+                                        <input type="hidden" name="iteration_id" value="<?php echo $iteration['id']; ?>">
+                                        <input type="hidden" name="parent_project_id" value="<?php echo $selected_project['id']; ?>">
+                                        <button type="submit">Delete</button>
+                                    </form>
+                                </div>
+
+                                <!-- EDIT ITERATION MODAL -->
+                                <div class="modal" id="edit-iteration-<?php echo $iteration['id']; ?>">
+                                    <div class="modal-content">
+                                        <button class="close-btn" onclick="closeModal('edit-iteration-<?php echo $iteration['id']; ?>')">&times;</button>
+                                        <h2>Edit Iteration</h2>
+                                        <form method="post" enctype="multipart/form-data">
+                                            <input type="hidden" name="update_iteration" value="1">
+                                            <input type="hidden" name="iteration_id" value="<?php echo $iteration['id']; ?>">
+                                            <input type="hidden" name="parent_project_id" value="<?php echo $selected_project['id']; ?>">
+                                            <label>Title:</label>
+                                            <input type="text" name="title" value="<?php echo htmlspecialchars($iteration['title']); ?>" required>
+                                            <label>Description:</label>
+                                            <textarea name="description" required><?php echo htmlspecialchars($iteration['description']); ?></textarea>
+                                            <label>Replace file (optional):</label>
+                                            <input type="file" name="file">
+                                            <button type="submit">Update Iteration</button>
+                                        </form>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
                         </li>
                     <?php endwhile; ?>
                     </ul>
