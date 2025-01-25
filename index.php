@@ -624,6 +624,15 @@ function renderFolderTree($parent_id = null) {
         .footer p{
             margin:0px;
         }
+        .left-pane ul li button{
+        	width:20px;
+        	height:20px;
+        	padding:0px;
+        	float:right;background:none !important;
+        }
+        .left-pane ul li button:hover{
+        	background:red !important;
+        }
     </style>
     <script>
     // Toggle between login & signup forms on the landing page
