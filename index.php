@@ -1,0 +1,797 @@
+<?php
+/*******************************
+ * projects.db + table creation
+ *******************************/
+$db = new SQLite3('projects.db');
+
+// Create tables if they don't exist
+$db->exec("CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    password TEXT,
+    role TEXT  -- Usually 'admin'
+)");
+
+$db->exec("CREATE TABLE IF NOT EXISTS folders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    parent_id INTEGER
+)");
+
+$db->exec("CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    folder_id INTEGER,
+    title TEXT,
+    description TEXT
+)");
+
+$db->exec("CREATE TABLE IF NOT EXISTS iterations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER,
+    title TEXT,
+    description TEXT,
+    file_url TEXT
+)");
+
+$db->exec("CREATE TABLE IF NOT EXISTS customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    password TEXT,
+    name TEXT,
+    email TEXT
+)");
+
+$db->exec("CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    iteration_id INTEGER,
+    customer_id INTEGER,
+    comment TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)");
+
+session_start();
+
+/********************************
+ * AUTH FUNCTIONS
+ ********************************/
+function login($username, $password) {
+    global $db;
+
+    // First check the 'users' table (admin)
+    $stmt = $db->prepare("SELECT id, password, role FROM users WHERE username = :u");
+    $stmt->bindValue(':u', $username, SQLITE3_TEXT);
+    $res = $stmt->execute();
+    $admin = $res->fetchArray(SQLITE3_ASSOC);
+
+    if ($admin) {
+        if (password_verify($password, $admin['password'])) {
+            $_SESSION['user_id'] = $admin['id'];
+            $_SESSION['role'] = $admin['role']; // 'admin'
+            $_SESSION['user_table'] = 'users';
+            return true;
+        }
+        return false;
+    }
+
+    // If not found in 'users', check 'customers'
+    $stmt = $db->prepare("SELECT id, password FROM customers WHERE username = :u");
+    $stmt->bindValue(':u', $username, SQLITE3_TEXT);
+    $res = $stmt->execute();
+    $customer = $res->fetchArray(SQLITE3_ASSOC);
+
+    if ($customer && password_verify($password, $customer['password'])) {
+        $_SESSION['user_id'] = $customer['id'];
+        $_SESSION['role'] = 'customer';
+        $_SESSION['user_table'] = 'customers';
+        return true;
+    }
+
+    return false;
+}
+
+function isLoggedIn() {
+    return isset($_SESSION['user_id']);
+}
+
+function isAdmin() {
+    return (isset($_SESSION['role']) && $_SESSION['role'] === 'admin');
+}
+
+function isCustomer() {
+    return (isset($_SESSION['role']) && $_SESSION['role'] === 'customer');
+}
+
+function logout() {
+    session_destroy();
+}
+
+/********************************
+ * HANDLE FORM SUBMISSIONS
+ ********************************/
+$error = null;
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // ---- LOGIN ----
+    if (isset($_POST['login_form'])) {
+        $username = $_POST['username'] ?? '';
+        $password = $_POST['password'] ?? '';
+        if (login($username, $password)) {
+            header('Location: ' . $_SERVER['PHP_SELF']);
+            exit;
+        } else {
+            $error = "Invalid username or password.";
+        }
+    }
+    // ---- SIGNUP (ADMIN ONLY) ----
+    elseif (isset($_POST['signup_form'])) {
+        // Only creating admins from public signup
+        $username = $_POST['username'] ?? '';
+        $passwordPlain = $_POST['password'] ?? '';
+        $hashed = password_hash($passwordPlain, PASSWORD_DEFAULT);
+
+        // Insert into `users` table with role='admin'
+        $stmt = $db->prepare("INSERT INTO users (username, password, role) VALUES (:u, :p, 'admin')");
+        $stmt->bindValue(':u', $username, SQLITE3_TEXT);
+        $stmt->bindValue(':p', $hashed, SQLITE3_TEXT);
+        $res = $stmt->execute();
+        if (!$res) {
+            $error = "Error creating admin (username might already exist).";
+        } else {
+            // Optionally auto-login new admin
+            login($username, $passwordPlain);
+            header('Location: ' . $_SERVER['PHP_SELF']);
+            exit;
+        }
+    }
+    // ---- CREATE FOLDER (ADMIN) ----
+    elseif (isset($_POST['create_folder']) && isAdmin()) {
+        $name = $_POST['name'] ?? '';
+        $parent_id = ($_POST['parent_id'] !== '') ? (int)$_POST['parent_id'] : null;
+
+        $stmt = $db->prepare("INSERT INTO folders (name, parent_id) VALUES (:n, :p)");
+        $stmt->bindValue(':n', $name, SQLITE3_TEXT);
+        if ($parent_id !== null) {
+            $stmt->bindValue(':p', $parent_id, SQLITE3_INTEGER);
+        } else {
+            $stmt->bindValue(':p', null, SQLITE3_NULL);
+        }
+        if (!$stmt->execute()) {
+            $error = "Error creating folder.";
+        } else {
+            header('Location: ' . $_SERVER['PHP_SELF']);
+            exit;
+        }
+    }
+    // ---- CREATE PROJECT (ADMIN) ----
+    elseif (isset($_POST['create_project']) && isAdmin()) {
+        $folder_id = (int)($_POST['folder_id'] ?? 0);
+        $title = $_POST['title'] ?? '';
+        $description = $_POST['description'] ?? '';
+
+        $stmt = $db->prepare("INSERT INTO projects (folder_id, title, description) VALUES (:f, :t, :d)");
+        $stmt->bindValue(':f', $folder_id, SQLITE3_INTEGER);
+        $stmt->bindValue(':t', $title, SQLITE3_TEXT);
+        $stmt->bindValue(':d', $description, SQLITE3_TEXT);
+        if (!$stmt->execute()) {
+            $error = "Error creating project.";
+        } else {
+            header('Location: ' . $_SERVER['PHP_SELF']);
+            exit;
+        }
+    }
+    // ---- CREATE ITERATION (ADMIN) ----
+    elseif (isset($_POST['create_iteration']) && isAdmin()) {
+        $project_id = (int)($_POST['project_id'] ?? 0);
+        $title = $_POST['title'] ?? '';
+        $description = $_POST['description'] ?? '';
+        $file = $_FILES['file'] ?? null;
+
+        $upload_dir = 'uploads/';
+        if (!is_dir($upload_dir)) {
+            mkdir($upload_dir, 0777, true);
+        }
+
+        if ($file && $file['tmp_name']) {
+            $file_url = $upload_dir . basename($file['name']);
+            if (move_uploaded_file($file['tmp_name'], $file_url)) {
+                $stmt = $db->prepare(
+                    "INSERT INTO iterations (project_id, title, description, file_url)
+                     VALUES (:pid, :t, :d, :f)"
+                );
+                $stmt->bindValue(':pid', $project_id, SQLITE3_INTEGER);
+                $stmt->bindValue(':t', $title, SQLITE3_TEXT);
+                $stmt->bindValue(':d', $description, SQLITE3_TEXT);
+                $stmt->bindValue(':f', $file_url, SQLITE3_TEXT);
+                if (!$stmt->execute()) {
+                    $error = "Error saving iteration in DB.";
+                } else {
+                    header('Location: ' . $_SERVER['PHP_SELF'] . '?project_id=' . $project_id);
+                    exit;
+                }
+            } else {
+                $error = "Error uploading file.";
+            }
+        } else {
+            $error = "No file uploaded.";
+        }
+    }
+    // ---- CREATE / UPDATE / DELETE CUSTOMER (ADMIN) ----
+    elseif (isset($_POST['create_customer']) && isAdmin()) {
+        $username = $_POST['username'] ?? '';
+        $password = password_hash($_POST['password'] ?? '', PASSWORD_DEFAULT);
+        $name = $_POST['name'] ?? '';
+        $email = $_POST['email'] ?? '';
+
+        $stmt = $db->prepare("INSERT INTO customers (username, password, name, email)
+                              VALUES (:u, :p, :n, :e)");
+        $stmt->bindValue(':u', $username, SQLITE3_TEXT);
+        $stmt->bindValue(':p', $password, SQLITE3_TEXT);
+        $stmt->bindValue(':n', $name, SQLITE3_TEXT);
+        $stmt->bindValue(':e', $email, SQLITE3_TEXT);
+        if (!$stmt->execute()) {
+            $error = "Error creating customer (username might already exist).";
+        } else {
+            header('Location: ' . $_SERVER['PHP_SELF'] . '?customers');
+            exit;
+        }
+    }
+    elseif (isset($_POST['update_customer']) && isAdmin()) {
+        $id = (int)($_POST['id'] ?? 0);
+        $username = $_POST['username'] ?? '';
+        $name = $_POST['name'] ?? '';
+        $email = $_POST['email'] ?? '';
+
+        $stmt = $db->prepare(
+            "UPDATE customers SET username=:u, name=:n, email=:e WHERE id=:id"
+        );
+        $stmt->bindValue(':u', $username, SQLITE3_TEXT);
+        $stmt->bindValue(':n', $name, SQLITE3_TEXT);
+        $stmt->bindValue(':e', $email, SQLITE3_TEXT);
+        $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+        if (!$stmt->execute()) {
+            $error = "Error updating customer.";
+        } else {
+            header('Location: ' . $_SERVER['PHP_SELF'] . '?customers');
+            exit;
+        }
+    }
+    elseif (isset($_POST['delete_customer']) && isAdmin()) {
+        $id = (int)($_POST['id'] ?? 0);
+
+        $stmt = $db->prepare("DELETE FROM customers WHERE id=:id");
+        $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+        if (!$stmt->execute()) {
+            $error = "Error deleting customer.";
+        } else {
+            header('Location: ' . $_SERVER['PHP_SELF'] . '?customers');
+            exit;
+        }
+    }
+    // ---- ADD COMMENT (CUSTOMER) ----
+    elseif (isset($_POST['comment']) && isCustomer()) {
+        $iteration_id = (int)($_POST['iteration_id'] ?? 0);
+        $commentText = $_POST['comment'] ?? '';
+        $customer_id = $_SESSION['user_id'];
+
+        $stmt = $db->prepare("INSERT INTO comments (iteration_id, customer_id, comment)
+                              VALUES (:i, :c, :cm)");
+        $stmt->bindValue(':i', $iteration_id, SQLITE3_INTEGER);
+        $stmt->bindValue(':c', $customer_id, SQLITE3_INTEGER);
+        $stmt->bindValue(':cm', $commentText, SQLITE3_TEXT);
+
+        if (!$stmt->execute()) {
+            $error = "Error submitting comment.";
+        } else {
+            header('Location: ' . $_SERVER['PHP_SELF'] . '?project_id=' . ((int)$_GET['project_id']));
+            exit;
+        }
+    }
+}
+
+// Logout
+if (isset($_GET['logout'])) {
+    logout();
+    header('Location: ' . $_SERVER['PHP_SELF']);
+    exit;
+}
+
+/********************************
+ * FETCH DATA FOR DISPLAY
+ ********************************/
+$customersResult = $db->query("SELECT * FROM customers ORDER BY username ASC");
+
+$selected_project = null;
+$iterations = null;
+if (isset($_GET['project_id'])) {
+    $pid = (int)$_GET['project_id'];
+    $selected_project = $db->querySingle("SELECT * FROM projects WHERE id=$pid", true);
+    if ($selected_project) {
+        $iterations = $db->query("SELECT * FROM iterations WHERE project_id=$pid");
+    }
+}
+
+/********************************
+ * FOLDER TREE RENDERING
+ ********************************/
+function renderFolderTree($parent_id = null) {
+    global $db;
+    $parent_condition = ($parent_id === null) ? "IS NULL" : "= $parent_id";
+    $folderQ = $db->query("SELECT * FROM folders WHERE parent_id $parent_condition ORDER BY name ASC");
+
+    while ($folder = $folderQ->fetchArray(SQLITE3_ASSOC)) {
+        echo "<li><span style='font-weight:bold;'>📁 " . htmlspecialchars($folder['name']) . "</span>";
+
+        // Get subfolders & projects
+        // We'll just quickly gather them, then do recursion
+        $projQ = $db->query("SELECT * FROM projects WHERE folder_id=".$folder['id']." ORDER BY title ASC");
+        $hasChildren = false;
+        // Let's gather projects in array
+        $projectsArr = [];
+        while ($p = $projQ->fetchArray(SQLITE3_ASSOC)) {
+            $projectsArr[] = $p;
+        }
+
+        // Check if we have subfolders
+        $subFolderQ = $db->query("SELECT id FROM folders WHERE parent_id=" . (int)$folder['id']);
+        $subfoldersArr = [];
+        while ($sf = $subFolderQ->fetchArray(SQLITE3_ASSOC)) {
+            $subfoldersArr[] = $sf;
+        }
+
+        if (count($projectsArr) || count($subfoldersArr)) {
+            echo "<ul>";
+            // Show projects
+            foreach ($projectsArr as $proj) {
+                echo "<li><a href='?project_id=" . $proj['id'] . "'>🗎 " . htmlspecialchars($proj['title']) . "</a></li>";
+            }
+            // Recurse subfolders
+            renderFolderTree($folder['id']);
+            echo "</ul>";
+        }
+
+        echo "</li>";
+    }
+}
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>jocarsa | firebrick</title>
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Ubuntu:ital,wght@0,300;0,400;0,500;0,700;1,300;1,400;1,500;1,700&display=swap');
+
+        body {
+            margin: 0; padding: 0;
+            font-family: Ubuntu,Arial, sans-serif;
+            background-color: #f4f4f4;
+        }
+        header {
+            background-color: firebrick;
+            color: white;
+            padding: 10px 20px;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        header h1 {
+            margin: 0;
+            display: flex;
+	flex-direction: row;
+	flex-wrap: nowrap;
+	justify-content: center;
+	align-items: center;
+	align-content: stretch;
+        }
+        header h1 img{
+        	width:50px;
+        	margin-right:20px;
+        }
+        nav a {
+            color: white; text-decoration: none; margin-left: 20px;
+        }
+        nav a:hover {
+            text-decoration: underline;
+        }
+
+        .footer {
+            background-color: firebrick;
+            color: white;
+            text-align: center;
+            padding: 10px;
+            position: fixed; bottom: 0; width: 100%;
+        }
+
+        /* Landing page login container */
+        .landing-container {
+            max-width: 500px; margin: 50px auto; background-color: #fff;
+            padding: 20px; border-radius: 6px; box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        .landing-container h2 {
+            margin-top: 0;
+        }
+        .error {
+            color: red; margin-top: 10px; font-weight: bold;
+        }
+        label {
+            display: block; margin: 8px 0 4px; font-weight: bold;
+        }
+        input[type="text"], input[type="password"], input[type="email"], textarea,select {
+            width: 100%; padding: 8px; margin-bottom: 10px;
+            border: 1px solid #ccc; border-radius: 4px;
+            box-sizing:border-box;
+        }
+        button {
+            background-color: firebrick; color: #fff;
+            border: none; border-radius: 4px;
+            padding: 10px 15px; cursor: pointer;
+        }
+        button:hover {
+            background-color: darkred;
+        }
+        a.toggle-link {
+            color: firebrick; cursor: pointer; text-decoration: underline; display: inline-block;
+            margin-top: 10px;
+        }
+
+        /* Dashboard layout */
+        .container {
+            display: flex; height: calc(100vh - 60px); /* minus header ~60px */
+        }
+        .left-pane {
+            width: 300px; background-color: #333; color: #fff; padding: 20px; overflow-y: auto;
+        }
+        .left-pane h3 {
+            margin-top: 0;
+        }
+        .left-pane ul {
+            list-style: none; padding-left: 0; margin: 0;
+        }
+        .left-pane li {
+            margin-bottom: 5px;
+            margin-left:20px;
+        }
+        .left-pane a {
+            color: #fff; text-decoration: none;
+        }
+        .left-pane a:hover {
+            text-decoration: underline;
+        }
+        .buttons {
+            margin-top: 20px;
+        }
+        .buttons button {
+            width: 100%; margin: 10px 0; padding: 10px;
+            border: none; border-radius: 4px; background-color: firebrick; color: #fff;
+            text-align: left; cursor: pointer;
+        }
+        .buttons button:hover {
+            background-color: darkred;
+        }
+
+        .main-pane {
+            flex-grow: 1; background: #fff; padding: 20px; overflow-y: auto;
+        }
+        table {
+            width: 100%; border-collapse: collapse; margin-top: 20px;
+        }
+        table th, table td {
+            border: 1px solid #ccc; padding: 8px; text-align: left;
+        }
+        video {
+            display: block; margin: 10px 0;
+        }
+
+        /* Modals */
+        .modal {
+            display: none; /* shown via JS */
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5);
+            align-items: center; justify-content: center;
+        }
+        .modal-content {
+            background: #fff; padding: 20px; border-radius: 6px;
+            width: 500px; max-width: 90%;
+            position: relative;
+        }
+        .modal-content h2 {
+            margin-top: 0;
+        }
+        .close-btn {
+            position: absolute; top: 10px; right: 10px;
+            background: #aaa; color: #fff; border: none; border-radius: 50%;
+            width: 30px; height: 30px; cursor: pointer; font-weight: bold;
+        }
+        .close-btn:hover {
+            background: #888;
+        }
+        .footer p{
+        	margin:0px;
+        }
+    </style>
+    <script>
+    // Toggle between login & signup forms on the landing page
+    function showSignup() {
+        document.getElementById('login-box').style.display = 'none';
+        document.getElementById('signup-box').style.display = 'block';
+    }
+    function showLogin() {
+        document.getElementById('login-box').style.display = 'block';
+        document.getElementById('signup-box').style.display = 'none';
+    }
+    // Show a modal by ID
+    function openModal(modalId) {
+        document.getElementById(modalId).style.display = 'flex';
+    }
+    // Hide a modal by ID
+    function closeModal(modalId) {
+        document.getElementById(modalId).style.display = 'none';
+    }
+    </script>
+</head>
+<body>
+<header>
+    <h1><img src="https://jocarsa.com/static/logo/firebrick.png">jocarsa | firebrick</h1>
+    <nav>
+        <?php if (isLoggedIn()): ?>
+            <a href="?logout">Logout</a>
+        <?php endif; ?>
+    </nav>
+</header>
+
+<!-- If not logged in, show landing page with login (and optional signup link) -->
+<?php if (!isLoggedIn()): ?>
+    <div class="landing-container">
+        <!-- LOGIN BOX -->
+        <div id="login-box">
+            <h2>Login</h2>
+            <form method="post">
+                <input type="hidden" name="login_form" value="1">
+                <label>Username:</label>
+                <input type="text" name="username" required>
+                <label>Password:</label>
+                <input type="password" name="password" required>
+                <button type="submit">Login</button>
+            </form>
+            <?php if ($error && isset($_POST['login_form'])): ?>
+                <div class="error"><?php echo htmlspecialchars($error); ?></div>
+            <?php endif; ?>
+            <a class="toggle-link" onclick="showSignup()">Sign Up as Admin</a>
+        </div>
+
+        <!-- SIGNUP BOX (admins only) -->
+        <div id="signup-box" style="display:none;">
+            <h2>Sign Up (Admin)</h2>
+            <form method="post">
+                <input type="hidden" name="signup_form" value="1">
+                <label>Username:</label>
+                <input type="text" name="username" required>
+                <label>Password:</label>
+                <input type="password" name="password" required>
+                <button type="submit">Sign Up</button>
+            </form>
+            <?php if ($error && isset($_POST['signup_form'])): ?>
+                <div class="error"><?php echo htmlspecialchars($error); ?></div>
+            <?php endif; ?>
+            <a class="toggle-link" onclick="showLogin()">Back to Login</a>
+        </div>
+    </div>
+
+<!-- If logged in, show the dashboard -->
+<?php else: ?>
+    <div class="container">
+        <!-- LEFT PANE: Folder Tree & Buttons -->
+        <div class="left-pane">
+            <h3>Carpetas y proyectos</h3>
+            <ul><?php renderFolderTree(); ?></ul>
+            <?php if (isAdmin()): ?>
+            <div class="buttons">
+                <button onclick="openModal('create-folder-modal')">+ Nueva carpeta</button>
+                <button onclick="openModal('create-project-modal')">+ New Project</button>
+                <button onclick="window.location='?customers'">Clientes</button>
+            </div>
+            <?php endif; ?>
+        </div>
+        <!-- MAIN PANE -->
+        <div class="main-pane">
+            <?php if ($error): ?>
+                <div class="error"><?php echo htmlspecialchars($error); ?></div>
+            <?php endif; ?>
+
+            <?php if (isset($_GET['customers']) && isAdmin()): ?>
+                <h2>Gestionar clientes</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Usuario</th>
+                            <th>Nombre</th>
+                            <th>Email</th>
+                            <th width="200">Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php while($cust = $customersResult->fetchArray(SQLITE3_ASSOC)): ?>
+                        <tr>
+                            <td><?php echo htmlspecialchars($cust['username']); ?></td>
+                            <td><?php echo htmlspecialchars($cust['name']); ?></td>
+                            <td><?php echo htmlspecialchars($cust['email']); ?></td>
+                            <td>
+                                <button onclick="openModal('edit-customer-<?php echo $cust['id']; ?>')">Edtar</button>
+                                <form method="post" style="display:inline-block">
+                                    <input type="hidden" name="delete_customer" value="1">
+                                    <input type="hidden" name="id" value="<?php echo $cust['id']; ?>">
+                                    <button type="submit">Borrar</button>
+                                </form>
+                            </td>
+                        </tr>
+                        <!-- EDIT CUSTOMER MODAL -->
+                        <div class="modal" id="edit-customer-<?php echo $cust['id']; ?>">
+                            <div class="modal-content">
+                                <button class="close-btn" onclick="closeModal('edit-customer-<?php echo $cust['id']; ?>')">&times;</button>
+                                <h2>Editar cliente</h2>
+                                <form method="post">
+                                    <input type="hidden" name="update_customer" value="1">
+                                    <input type="hidden" name="id" value="<?php echo $cust['id']; ?>">
+                                    <label>Usuario:</label>
+                                    <input type="text" name="username" value="<?php echo htmlspecialchars($cust['username']); ?>" required>
+                                    <label>Nombre:</label>
+                                    <input type="text" name="name" value="<?php echo htmlspecialchars($cust['name']); ?>" required>
+                                    <label>Email:</label>
+                                    <input type="email" name="email" value="<?php echo htmlspecialchars($cust['email']); ?>" required>
+                                    <button type="submit">Actualizar</button>
+                                </form>
+                            </div>
+                        </div>
+                    <?php endwhile; ?>
+                    </tbody>
+                </table>
+
+                <!-- CREATE CUSTOMER (ADMIN) -->
+                <div style="margin-top: 30px;">
+                    <h3>Create Nuevo cliente</h3>
+                    <form method="post">
+                        <input type="hidden" name="create_customer" value="1">
+                        <label>Usuario:</label>
+                        <input type="text" name="username" required>
+                        <label>Contraseña:</label>
+                        <input type="password" name="password" required>
+                        <label>Nombre:</label>
+                        <input type="text" name="name" required>
+                        <label>Email:</label>
+                        <input type="email" name="email" required>
+                        <button type="submit">Create</button>
+                    </form>
+                </div>
+            <?php elseif ($selected_project): ?>
+                <!-- SHOW SELECTED PROJECT -->
+                <h2><?php echo htmlspecialchars($selected_project['title']); ?></h2>
+                <p><?php echo nl2br(htmlspecialchars($selected_project['description'])); ?></p>
+                <h3>Iterations</h3>
+                <?php if ($iterations): ?>
+                    <ul>
+                    <?php while ($iteration = $iterations->fetchArray(SQLITE3_ASSOC)): ?>
+                        <li>
+                            <h4><?php echo htmlspecialchars($iteration['title']); ?></h4>
+                            <p><?php echo nl2br(htmlspecialchars($iteration['description'])); ?></p>
+                            <?php if ($iteration['file_url']): ?>
+                            <video width="320" height="240" controls>
+                                <source src="<?php echo htmlspecialchars($iteration['file_url']); ?>" type="video/mp4">
+                                Your browser does not support the video tag.
+                            </video>
+                            <?php endif; ?>
+
+                            <!-- If customer, allow comment -->
+                            <?php if (isCustomer()): ?>
+                            <form method="post">
+                                <input type="hidden" name="comment" value="1">
+                                <input type="hidden" name="iteration_id" value="<?php echo $iteration['id']; ?>">
+                                <label>Comment:</label>
+                                <textarea name="comment" required></textarea>
+                                <button type="submit">Submit</button>
+                            </form>
+                            <?php endif; ?>
+
+                            <!-- Comments -->
+                            <ul>
+                            <?php
+                            $commentQ = $db->query("SELECT * FROM comments WHERE iteration_id=" . (int)$iteration['id'] . " ORDER BY created_at ASC");
+                            while ($com = $commentQ->fetchArray(SQLITE3_ASSOC)):
+                            ?>
+                                <li>
+                                    <p><?php echo nl2br(htmlspecialchars($com['comment'])); ?></p>
+                                    <small>
+                                        Comentario del cliente: #<?php echo $com['customer_id']; ?> 
+                                        en <?php echo $com['created_at']; ?>
+                                    </small>
+                                </li>
+                            <?php endwhile; ?>
+                            </ul>
+                        </li>
+                    <?php endwhile; ?>
+                    </ul>
+                <?php else: ?>
+                    <p>Todavía no hay iteraciones.</p>
+                <?php endif; ?>
+
+                <!-- Admin can create iteration -->
+                <?php if (isAdmin()): ?>
+                    <hr>
+                    <h3>Crear nueva iteración</h3>
+                    <form method="post" enctype="multipart/form-data">
+                        <input type="hidden" name="create_iteration" value="1">
+                        <input type="hidden" name="project_id" value="<?php echo $selected_project['id']; ?>">
+                        <label>Título:</label>
+                        <input type="text" name="title" required>
+                        <label>Descripción:</label>
+                        <textarea name="description" required></textarea>
+                        <label>Archivo:</label>
+                        <input type="file" name="file" required>
+                        <button type="submit">Crear iteración</button>
+                    </form>
+                <?php endif; ?>
+            <?php else: ?>
+                <!-- If no specific project or customers requested, you can show a default message -->
+                <h2>Bienvenidos al escritorio</h2>
+                <p>Selecciona contenido de la izquierda</p>
+            <?php endif; ?>
+        </div>
+    </div>
+
+    <!-- CREATE FOLDER MODAL (ADMIN) -->
+    <?php if (isAdmin()): ?>
+    <div class="modal" id="create-folder-modal">
+        <div class="modal-content">
+            <button class="close-btn" onclick="closeModal('create-folder-modal')">&times;</button>
+            <h2>Crear carpeta</h2>
+            <form method="post">
+                <input type="hidden" name="create_folder" value="1">
+                <label>Nombre de la carpeta:</label>
+                <input type="text" name="name" required>
+                <label>Carpeta superior:</label>
+                <select name="parent_id">
+                    <option value="">(Sin superior)</option>
+                    <?php
+                    // For the dropdown
+                    $allFolders = $db->query("SELECT * FROM folders ORDER BY name ASC");
+                    while ($fo = $allFolders->fetchArray(SQLITE3_ASSOC)) {
+                        echo "<option value='{$fo['id']}'>" . htmlspecialchars($fo['name']) . "</option>";
+                    }
+                    ?>
+                </select>
+                <button type="submit">Create Folder</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- CREATE PROJECT MODAL (ADMIN) -->
+    <div class="modal" id="create-project-modal">
+        <div class="modal-content">
+            <button class="close-btn" onclick="closeModal('create-project-modal')">&times;</button>
+            <h2>Crear proyecto</h2>
+            <form method="post">
+                <input type="hidden" name="create_project" value="1">
+                <label>Carpeta:</label>
+                <select name="folder_id" required>
+                    <option value="">-- Selecciona una carpeta --</option>
+                    <?php
+                    $allFolders2 = $db->query("SELECT * FROM folders ORDER BY name ASC");
+                    while ($fo2 = $allFolders2->fetchArray(SQLITE3_ASSOC)) {
+                        echo "<option value='{$fo2['id']}'>" . htmlspecialchars($fo2['name']) . "</option>";
+                    }
+                    ?>
+                </select>
+                <label>Título del proyecto:</label>
+                <input type="text" name="title" required>
+                <label>Descripción:</label>
+                <textarea name="description" required></textarea>
+                <button type="submit">Crear proyecto</button>
+            </form>
+        </div>
+    </div>
+    <?php endif; ?>
+<?php endif; ?>
+
+<div class="footer">
+    <p>&copy; <?php echo date('Y'); ?> jocarsa | firebrick</p>
+</div>
+</body>
+</html>
+
