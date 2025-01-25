@@ -637,6 +637,13 @@ function renderFolderTree($parent_id = null) {
         display:block;
         	margin-bottom:10px;
         }
+        .botondescarga{
+        	background:green;
+        	color:white;
+        	padding:10px 20px;
+        	border-radius:5px;
+        	text-decoration:none;
+        }
     </style>
     <script>
     // Toggle between login & signup forms on the landing page
@@ -795,7 +802,7 @@ function renderFolderTree($parent_id = null) {
                 <!-- SHOW SELECTED PROJECT -->
                 <h2><?php echo htmlspecialchars($selected_project['title']); ?></h2>
                 <p><?php echo nl2br(htmlspecialchars($selected_project['description'])); ?></p>
-                <h3>Iterations</h3>
+                <h3>Iteraciones</h3>
                 <?php if ($iterations): ?>
                     <ul style="list-style:none;padding:0;">
                     <?php while ($iteration = $iterations->fetchArray(SQLITE3_ASSOC)): ?>
@@ -811,8 +818,8 @@ function renderFolderTree($parent_id = null) {
                             <p>
                                 <a href="<?php echo htmlspecialchars($iteration['file_url']); ?>" 
                                    download
-                                   style="color:blue;text-decoration:underline;">
-                                   Download Video
+                                   class="botondescarga">
+                                   Descargar video
                                 </a>
                             </p>
                             <?php endif; ?>
@@ -822,9 +829,9 @@ function renderFolderTree($parent_id = null) {
                             <form method="post">
                                 <input type="hidden" name="comment" value="1">
                                 <input type="hidden" name="iteration_id" value="<?php echo $iteration['id']; ?>">
-                                <label>Comment:</label>
+                                <label>Comentario:</label>
                                 <textarea name="comment" required></textarea>
-                                <button type="submit">Submit</button>
+                                <button type="submit">Enviar</button>
                             </form>
                             <?php endif; ?>
 
