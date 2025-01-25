@@ -506,6 +506,9 @@ function renderFolderTree($parent_id = null) {
         .footer p{
         	margin:0px;
         }
+        video{
+        	width:100%;
+        }
     </style>
     <script>
     // Toggle between login & signup forms on the landing page
@@ -672,7 +675,7 @@ function renderFolderTree($parent_id = null) {
                             <h4><?php echo htmlspecialchars($iteration['title']); ?></h4>
                             <p><?php echo nl2br(htmlspecialchars($iteration['description'])); ?></p>
                             <?php if ($iteration['file_url']): ?>
-                            <video width="320" height="240" controls>
+                            <video  controls>
                                 <source src="<?php echo htmlspecialchars($iteration['file_url']); ?>" type="video/mp4">
                                 Your browser does not support the video tag.
                             </video>
