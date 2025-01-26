@@ -596,7 +596,7 @@ function renderFolderTree($parent_id = null) {
         }
         video {
             display: block; margin: 10px 0;
-            max-width: 100%;
+            max-width: 66%;
         }
 
         /* Modals */
@@ -652,6 +652,7 @@ function renderFolderTree($parent_id = null) {
 	justify-content: space-between;
 	align-items: stretch;
 	align-content: stretch;
+	gap:40px;
         }
     </style>
     <script>
