@@ -645,6 +645,14 @@ function renderFolderTree($parent_id = null) {
         	border-radius:5px;
         	text-decoration:none;
         }
+        .main-pane ul li{
+        	display: flex;
+	flex-direction: row;
+	flex-wrap: nowrap;
+	justify-content: space-between;
+	align-items: stretch;
+	align-content: stretch;
+        }
     </style>
     <script>
     // Toggle between login & signup forms on the landing page
@@ -808,13 +816,16 @@ function renderFolderTree($parent_id = null) {
                     <ul style="list-style:none;padding:0;">
                     <?php while ($iteration = $iterations->fetchArray(SQLITE3_ASSOC)): ?>
                         <li style="border:1px solid #ccc; padding:10px; margin-bottom:10px;">
-                            <h4><?php echo htmlspecialchars($iteration['title']); ?></h4>
-                            <p><?php echo nl2br(htmlspecialchars($iteration['description'])); ?></p>
-                            <?php if ($iteration['file_url']): ?>
-                            <video controls>
+                        	 <video controls>
                                 <source src="<?php echo htmlspecialchars($iteration['file_url']); ?>" type="video/mp4">
                                 Your browser does not support the video tag.
                             </video>
+                            <div class="texto">
+                            <h4><?php echo htmlspecialchars($iteration['title']); ?></h4>
+                            <p><?php echo nl2br(htmlspecialchars($iteration['description'])); ?></p>
+                            <?php if ($iteration['file_url']): ?>
+                           
+                            
                             <!-- Direct Download Link -->
                             <p>
                                 <a href="<?php echo htmlspecialchars($iteration['file_url']); ?>" 
@@ -884,6 +895,7 @@ function renderFolderTree($parent_id = null) {
                                     </div>
                                 </div>
                             <?php endif; ?>
+                            </div>
                         </li>
                     <?php endwhile; ?>
                     </ul>
