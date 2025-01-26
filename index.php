@@ -555,7 +555,7 @@ function renderFolderTree($parent_id = null) {
             display: flex; height: calc(100vh - 60px); /* minus header ~60px */
         }
         .left-pane {
-            width: 300px; background-color: #333; color: #fff; padding: 20px; overflow-y: auto;
+            width: 500px; background-color: #333; color: #fff; padding: 20px; overflow-y: auto;
         }
         .left-pane h3 {
             margin-top: 0;
