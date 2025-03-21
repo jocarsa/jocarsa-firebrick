@@ -49,6 +49,15 @@ $db->exec("CREATE TABLE IF NOT EXISTS comments (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )");
 
+// Create table to store per-user folder states (0 = unfolded, 1 = folded)
+$db->exec("CREATE TABLE IF NOT EXISTS user_folder_states (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    folder_id INTEGER,
+    is_folded INTEGER DEFAULT 0,
+    UNIQUE(user_id, folder_id)
+)");
+
 session_start();
 
 /********************************
@@ -103,6 +112,25 @@ function isCustomer() {
 
 function logout() {
     session_destroy();
+}
+
+/********************************
+ * HANDLE FOLDER TOGGLE (FOLD/UNFOLD)
+ ********************************/
+if (isset($_GET['toggle_folder']) && isLoggedIn()) {
+    $folder_id = (int) $_GET['toggle_folder'];
+    $new_state = (int) $_GET['state']; // 0 = unfolded, 1 = folded
+    $user_id = $_SESSION['user_id'];
+
+    $stmt = $db->prepare("INSERT OR REPLACE INTO user_folder_states (user_id, folder_id, is_folded)
+                           VALUES (:user_id, :folder_id, :is_folded)");
+    $stmt->bindValue(':user_id', $user_id, SQLITE3_INTEGER);
+    $stmt->bindValue(':folder_id', $folder_id, SQLITE3_INTEGER);
+    $stmt->bindValue(':is_folded', $new_state, SQLITE3_INTEGER);
+    $stmt->execute();
+
+    header("Location: " . $_SERVER['PHP_SELF']);
+    exit;
 }
 
 /********************************
@@ -418,54 +446,68 @@ function renderFolderTree($parent_id = null) {
     $folderQ = $db->query("SELECT * FROM folders WHERE parent_id $parent_condition ORDER BY name ASC");
 
     while ($folder = $folderQ->fetchArray(SQLITE3_ASSOC)) {
-        echo "<li><span style='font-weight:bold;'>📁 " . htmlspecialchars($folder['name']) . "</span>";
-
-        // Only admins see delete button for folder:
-        if (isAdmin()) {
-            echo "<form method='post' style='display:inline;' onsubmit='return confirm(\"Delete this folder?\");'>
-                    <input type='hidden' name='delete_folder' value='1'>
-                    <input type='hidden' name='folder_id' value='{$folder['id']}'>
-                    <button type='submit' style='margin-left:10px;background:red;'>X</button>
-                  </form>";
-        }
-
-        // Get subfolders & projects
-        $projQ = $db->query("SELECT * FROM projects WHERE folder_id=".$folder['id']." ORDER BY title ASC");
-
-        // Gather projects in array
-        $projectsArr = [];
-        while ($p = $projQ->fetchArray(SQLITE3_ASSOC)) {
-            $projectsArr[] = $p;
-        }
-
-        // Check subfolders
-        $subFolderQ = $db->query("SELECT id FROM folders WHERE parent_id=" . (int)$folder['id']);
-        $subfoldersArr = [];
-        while ($sf = $subFolderQ->fetchArray(SQLITE3_ASSOC)) {
-            $subfoldersArr[] = $sf;
-        }
-
-        if (count($projectsArr) || count($subfoldersArr)) {
-            echo "<ul>";
-            // Show projects
-            foreach ($projectsArr as $proj) {
-                echo "<li>";
-                echo "<a href='?project_id=" . $proj['id'] . "'>🗎 " . htmlspecialchars($proj['title']) . "</a>";
-                // Only admins see delete button for project:
-                if (isAdmin()) {
-                    echo "<form method='post' style='display:inline;' onsubmit='return confirm(\"Delete this project?\");'>
-                            <input type='hidden' name='delete_project' value='1'>
-                            <input type='hidden' name='project_id' value='{$proj['id']}'>
-                            <button type='submit' style='margin-left:10px;background:red;'>X</button>
-                          </form>";
-                }
-                echo "</li>";
+        // Determine folder fold state for the current user (default is unfolded, i.e. 0)
+        $is_folded = 0;
+        if (isLoggedIn()) {
+            $stmt = $db->prepare("SELECT is_folded FROM user_folder_states WHERE user_id = :user_id AND folder_id = :folder_id");
+            $stmt->bindValue(':user_id', $_SESSION['user_id'], SQLITE3_INTEGER);
+            $stmt->bindValue(':folder_id', $folder['id'], SQLITE3_INTEGER);
+            $result = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+            if ($result) {
+                $is_folded = $result['is_folded'];
             }
-            // Recurse subfolders
-            renderFolderTree($folder['id']);
-            echo "</ul>";
         }
 
+        echo "<li><span style='font-weight:bold;'>";
+        // Render toggle icon if user is logged in
+        if (isLoggedIn()) {
+            if ($is_folded == 0) {
+                // Unfolded: show minus icon to allow folding
+                echo "<a href='?toggle_folder={$folder['id']}&state=1' title='Fold'>➖</a> ";
+            } else {
+                // Folded: show plus icon to allow unfolding
+                echo "<a href='?toggle_folder={$folder['id']}&state=0' title='Unfold'>➕</a> ";
+            }
+        }
+        echo "📁 " . htmlspecialchars($folder['name']) . "</span>";
+
+        // Render children only if folder is unfolded
+        if ($is_folded == 0) {
+            // Get projects inside this folder
+            $projQ = $db->query("SELECT * FROM projects WHERE folder_id=" . $folder['id'] . " ORDER BY title ASC");
+            $projectsArr = [];
+            while ($p = $projQ->fetchArray(SQLITE3_ASSOC)) {
+                $projectsArr[] = $p;
+            }
+
+            // Check for subfolders
+            $subFolderQ = $db->query("SELECT id FROM folders WHERE parent_id=" . (int)$folder['id']);
+            $subfoldersArr = [];
+            while ($sf = $subFolderQ->fetchArray(SQLITE3_ASSOC)) {
+                $subfoldersArr[] = $sf;
+            }
+
+            if (count($projectsArr) || count($subfoldersArr)) {
+                echo "<ul>";
+                // Render projects
+                foreach ($projectsArr as $proj) {
+                    echo "<li>";
+                    echo "<a href='?project_id=" . $proj['id'] . "'>🗎 " . htmlspecialchars($proj['title']) . "</a>";
+                    // Only admins see delete button for project:
+                    if (isAdmin()) {
+                        echo "<form method='post' style='display:inline;' onsubmit='return confirm(\"Delete this project?\");'>
+                                <input type='hidden' name='delete_project' value='1'>
+                                <input type='hidden' name='project_id' value='{$proj['id']}'>
+                                <button type='submit' style='margin-left:10px;background:red;'>X</button>
+                              </form>";
+                    }
+                    echo "</li>";
+                }
+                // Recurse to render subfolders
+                renderFolderTree($folder['id']);
+                echo "</ul>";
+            }
+        }
         echo "</li>";
     }
 }
@@ -647,12 +689,12 @@ function renderFolderTree($parent_id = null) {
         }
         .main-pane ul li{
         	display: flex;
-	flex-direction: row;
-	flex-wrap: nowrap;
-	justify-content: space-between;
-	align-items: stretch;
-	align-content: stretch;
-	gap:40px;
+	        flex-direction: row;
+	        flex-wrap: nowrap;
+	        justify-content: space-between;
+	        align-items: stretch;
+	        align-content: stretch;
+	        gap:40px;
         }
     </style>
     <script>
@@ -825,8 +867,6 @@ function renderFolderTree($parent_id = null) {
                             <h4><?php echo htmlspecialchars($iteration['title']); ?></h4>
                             <p><?php echo nl2br(htmlspecialchars($iteration['description'])); ?></p>
                             <?php if ($iteration['file_url']): ?>
-                           
-                            
                             <!-- Direct Download Link -->
                             <p>
                                 <a href="<?php echo htmlspecialchars($iteration['file_url']); ?>" 
