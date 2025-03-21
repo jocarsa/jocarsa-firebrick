@@ -2,7 +2,7 @@
 /*******************************
  * projects.db + table creation
  *******************************/
-$db = new SQLite3('projects.db');
+$db = new SQLite3('../databases/firebrick.db');
 
 // Create tables if they don't exist
 $db->exec("CREATE TABLE IF NOT EXISTS users (
