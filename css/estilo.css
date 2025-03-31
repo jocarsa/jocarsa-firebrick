@@ -301,4 +301,7 @@ video {
 .close-btn:hover {
     background: #bbb;
 }
+footer{
+display:none;
+}
 
