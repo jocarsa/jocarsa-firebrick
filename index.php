@@ -100,6 +100,7 @@ if (isset($_GET['project_id'])) {
             FROM iterations 
             LEFT JOIN iteration_dates ON iterations.id = iteration_dates.iteration_id 
             WHERE project_id = $pid
+            ORDER BY iterations.id DESC
         ");
     }
 }
