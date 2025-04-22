@@ -112,7 +112,7 @@ include "bloques/foldertree.php";
 <head>
     <meta charset="UTF-8">
     <title>jocarsa | firebrick</title>
-    <link rel="icon" type="image/svg+xml" href="https://jocarsa.com/static/logo/firebrick.png" />
+    <link rel="icon" type="image/svg+xml" href="https://static.jocarsa.com/logos/firebrick.png" />
     <link rel="stylesheet" href="css/estilo.css">
     <script>
     // Toggle between login & signup forms on the landing page
@@ -136,7 +136,7 @@ include "bloques/foldertree.php";
 </head>
 <body>
 <header>
-    <h1><img src="https://jocarsa.com/static/logo/firebrick.png">jocarsa | firebrick</h1>
+    <a href="?"><h1><img src="https://static.jocarsa.com/logos/firebrick.png">jocarsa | firebrick</h1></a>
     <nav>
         <?php if (isLoggedIn()): ?>
             <a href="?logout">Logout</a>

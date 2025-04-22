@@ -101,7 +101,7 @@
                             <?php if ($iteration['file_url']): ?>
                             <!-- Direct Download Link -->
                             <p>
-                                <a href="<?php echo htmlspecialchars($iteration['file_url']); ?>" 
+                                <a href="<?php echo htmlspecialchars($iteration['file_url']); ?>"
                                    download
                                    class="botondescarga">
                                    Descargar video
@@ -129,7 +129,7 @@
                                 <li>
                                     <p><?php echo nl2br(htmlspecialchars($com['comment'])); ?></p>
                                     <small>
-                                        Comentario del cliente: #<?php echo $com['customer_id']; ?> 
+                                        Comentario del cliente: #<?php echo $com['customer_id']; ?>
                                         en <?php echo $com['created_at']; ?>
                                     </small>
                                 </li>
@@ -193,9 +193,41 @@
                 </form>
             <?php endif; ?>
         <?php else: ?>
-            <!-- If no specific project or customers requested, you can show a default message -->
-            <h2>Bienvenidos al escritorio</h2>
-            <p>Selecciona contenido de la izquierda</p>
+            <!-- If no specific project or customers requested, show a default message -->
+            <h2>Últimas adiciones al proyecto</h2>
+            <?php
+            // Fetch the last 20 iterations
+            $lastIterations = $db->query("
+                SELECT iterations.*, iteration_dates.created_at, projects.title AS project_title, folders.name AS folder_name
+                FROM iterations
+                LEFT JOIN iteration_dates ON iterations.id = iteration_dates.iteration_id
+                LEFT JOIN projects ON iterations.project_id = projects.id
+                LEFT JOIN folders ON projects.folder_id = folders.id
+                ORDER BY iteration_dates.created_at DESC
+                LIMIT 20
+            ");
+            ?>
+            <ul style="list-style:none;padding:0;">
+            <?php while ($iteration = $lastIterations->fetchArray(SQLITE3_ASSOC)): ?>
+                <li style="border:1px solid #ccc; padding:10px; margin-bottom:10px;">
+                    <h4><?php echo htmlspecialchars($iteration['title']); ?></h4>
+                    <p class="creation-date">Created on: <?php echo htmlspecialchars($iteration['created_at']); ?></p>
+                    <p><strong>Project:</strong> <a href="?project_id=<?php echo $iteration['project_id']; ?>"><?php echo htmlspecialchars($iteration['project_title']); ?></a></p>
+                    <p><strong>Folder:</strong> <?php echo htmlspecialchars($iteration['folder_name']); ?></p>
+                    <p><?php echo nl2br(htmlspecialchars($iteration['description'])); ?></p>
+                    <?php if ($iteration['file_url']): ?>
+                    <!-- Direct Download Link -->
+                    <p>
+                        <a href="<?php echo htmlspecialchars($iteration['file_url']); ?>"
+                           download
+                           class="botondescarga">
+                           Descargar video
+                        </a>
+                    </p>
+                    <?php endif; ?>
+                </li>
+            <?php endwhile; ?>
+            </ul>
         <?php endif; ?>
     </div>
 </div>
